@@ -9,7 +9,7 @@
 }
 
 body{   
-    background-image: url('Filosofia back2');
+    background-image: url('none');
     background-repeat: no-repeat;
     background-size: cover;
     background-attachment: fixed;
@@ -29,7 +29,7 @@ body.box-2{
 }
 
 body.box-3{
-    background-image: url('images/Filosofia back2.jpg');
+    background-image: url('images/Filosofia back2.jpeg');
     background-repeat: no-repeat;
     background-size: cover;
     background-attachment: fixed;
