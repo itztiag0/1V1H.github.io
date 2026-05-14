@@ -1,12 +1,14 @@
 // === 1v1.LOL GAME ENGINE ===
 const G = 4, PH = 1.7, SPD = 12, JMP = 10, GRV = 28, SENS = 0.002, BCOST = 10;
 const WPN = [
-    { n: 'RIFLE', dmg: 15, rate: 150, rng: 200, c: 0x00e5ff, mag: 30, maxMag: 30, reloading: false, reloadTime: 1500 },
-    { n: 'SHOTGUN', dmg: 40, rate: 600, rng: 30, c: 0xffab00, mag: 6, maxMag: 6, reloading: false, reloadTime: 2000 },
-    { n: 'PICKAXE', dmg: 25, rate: 400, rng: 5, c: 0xb0bec5, mag: Infinity, maxMag: Infinity, reloading: false, reloadTime: 0 }
+    { n: 'PUÑOS', dmg: 25, rate: 400, rng: 5, c: 0xffa07a, mag: Infinity, maxMag: Infinity, reloading: false, reloadTime: 0 },
+    { n: 'ESPADA', dmg: 40, rate: 500, rng: 8, c: 0xaaaaaa, mag: Infinity, maxMag: Infinity, reloading: false, reloadTime: 0 },
+    { n: 'ESCUDO', dmg: 30, rate: 600, rng: 6, c: 0x42a5f5, mag: Infinity, maxMag: Infinity, reloading: false, reloadTime: 0 }
 ];
 const keys = {};
 let locked = false, mode = 'combat', selW = 0, selB = 0, bRot = 0, pHP = 100, pShield = 0, res = 500, bCnt = 0;
+let pInv = [0];
+let pConsumables = [];
 let editSel = null, editOrigColor = null, editMoving = false;
 let vel = new THREE.Vector3(), canJ = false, lastShot = 0, builds = [], tracers = [];
 let euler = new THREE.Euler(0, 0, 0, 'YXZ');
@@ -18,13 +20,56 @@ let busGroup = null, busT = 0;
 let chests = [], lootItems = [], chestSpawns = [];
 let stormRadius = 400, stormCenter = { x: 0, z: 0 }, stormTimer = 0, lastStormDmgT = 0;
 const LOOT_TYPES = [
-    { n: 'RIFLE', type: 'weapon', wpnIdx: 0, color: 0x00e5ff },
-    { n: 'SHOTGUN', type: 'weapon', wpnIdx: 1, color: 0xffab00 },
+    { n: 'ESPADA', type: 'weapon', wpnIdx: 1, color: 0xaaaaaa },
+    { n: 'ESCUDO', type: 'weapon', wpnIdx: 2, color: 0x42a5f5 },
     { n: 'MEDKIT', type: 'heal', amount: 50, color: 0x00e676 },
     { n: 'SHIELD', type: 'shield', amount: 50, color: 0x42a5f5 },
     { n: 'MINI SHIELD', type: 'shield', amount: 25, color: 0x1e88e5 },
     { n: 'BANDAGE', type: 'heal', amount: 15, color: 0x66bb6a }
 ];
+
+// === MULTIPLAYER VARIABLES ===
+let socket = null;
+let networkPlayers = {};
+
+if (typeof io !== 'undefined') {
+    socket = io();
+
+    socket.on('currentPlayers', (players) => {
+        Object.keys(players).forEach((id) => {
+            if (id !== socket.id) {
+                addNetworkPlayer(players[id]);
+            }
+        });
+    });
+
+    socket.on('newPlayer', (playerInfo) => {
+        addNetworkPlayer(playerInfo);
+    });
+
+    socket.on('playerMoved', (playerInfo) => {
+        if (networkPlayers[playerInfo.id]) {
+            networkPlayers[playerInfo.id].position.set(playerInfo.x, playerInfo.y, playerInfo.z);
+            networkPlayers[playerInfo.id].rotation.y = playerInfo.rotation;
+        }
+    });
+
+    socket.on('playerDisconnected', (id) => {
+        if (networkPlayers[id]) {
+            scene.remove(networkPlayers[id]);
+            delete networkPlayers[id];
+        }
+    });
+}
+
+function addNetworkPlayer(info) {
+    const geo = new THREE.BoxGeometry(0.8, 1.8, 0.8);
+    const mat = new THREE.MeshStandardMaterial({ color: 0x00ff00 }); // Green for real players
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(info.x, info.y, info.z);
+    scene.add(mesh);
+    networkPlayers[info.id] = mesh;
+}
 
 // Scene
 const scene = new THREE.Scene();
@@ -131,24 +176,9 @@ function updateDayCycle(dt) {
     dL.position.set(Math.cos(sunAngle) * 60, Math.sin(sunAngle) * 50 + 10, 20);
 }
 
-// Terrain Function – procedural hills
+// Terrain Function - perfectly flat for 1v1.lol style building
 function getTerrainH(x, z) {
-    // Gentle rolling hills with a few distinct peaks
-    let h = 0;
-    h += Math.sin(x * 0.015) * Math.cos(z * 0.015) * 6;
-    h += Math.sin(x * 0.03 + 1.3) * Math.sin(z * 0.025 + 0.7) * 3;
-    h += Math.cos(x * 0.007 + z * 0.009) * 4;
-    // Mountain peaks
-    const d1 = Math.sqrt((x + 120) * (x + 120) + (z + 120) * (z + 120));
-    if (d1 < 60) h += (60 - d1) * 0.4;
-    const d2 = Math.sqrt((x - 130) * (x - 130) + (z - 110) * (z - 110));
-    if (d2 < 50) h += (50 - d2) * 0.35;
-    const d3 = Math.sqrt((x - 100) * (x - 100) + (z + 130) * (z + 130));
-    if (d3 < 45) h += (45 - d3) * 0.3;
-    // Flatten center slightly for the main town
-    const dc = Math.sqrt(x * x + z * z);
-    if (dc < 50) h *= dc / 50;
-    return Math.max(0, h);
+    return 0;
 }
 
 // Texture loader
@@ -758,10 +788,12 @@ function addLamp(x, z) {
     lt.position.set(x + 0.7, 3.8, z); scene.add(lt);
 }
 
+
 // ======= PLACE EVERYTHING =======
 // Roads
 addRoad(0, 0, 8, 380);        // Main road N-S
 addRoad(0, 0, 380, 8);        // Cross road E-W
+
 
 // Houses & Shops (Core area)
 buildOpenHouse(-24, -24);
@@ -883,26 +915,13 @@ addLamp(-45, 10); addLamp(45, -10); addLamp(10, 55); addLamp(-10, -55);
 addLamp(-80, -90); addLamp(80, 90); addLamp(-60, 100); addLamp(60, -100);
 addLamp(120, 20); addLamp(-120, -20); addLamp(20, 120); addLamp(-20, -120);
 
-// Trees — Original
-addTree(-42, -15, 1.5); addTree(-48, 12, 1.2); addTree(45, 15, 1.8);
-addTree(42, -45, 1.3); addTree(-15, 45, 1.6); addTree(18, 55, 1.1);
-addTree(-55, -40, 1.4); addTree(60, 45, 1.7); addTree(-38, 28, 1.0);
-addTree(-75, 25, 1.6); addTree(75, -25, 1.3); addTree(-28, 70, 1.4);
-addTree(28, -70, 1.5); addTree(-58, 65, 1.1); addTree(65, -58, 1.2);
-addTree(85, 8, 1.8); addTree(-85, -8, 1.6); addTree(10, 85, 1.3);
-// Trees — Extended map forests
-addTree(-100, -80, 2.0); addTree(-110, -75, 1.5); addTree(-95, -65, 1.8);
-addTree(-115, -90, 1.3); addTree(-90, -100, 1.6); addTree(-105, -55, 1.4);
-addTree(100, 80, 1.9); addTree(110, 75, 1.6); addTree(95, 65, 1.7);
-addTree(115, 90, 1.4); addTree(90, 100, 1.5); addTree(105, 55, 1.2);
-addTree(100, -70, 1.8); addTree(110, -85, 1.5); addTree(120, -60, 1.3);
-addTree(-100, 70, 1.6); addTree(-110, 85, 1.4); addTree(-120, 60, 1.7);
-addTree(-140, -140, 1.9); addTree(-150, -130, 1.5); addTree(-130, -150, 1.7);
-addTree(140, 120, 1.8); addTree(150, 110, 1.4); addTree(130, 130, 1.6);
-addTree(-160, 40, 1.5); addTree(-170, 30, 1.3); addTree(-155, 55, 1.7);
-addTree(160, -40, 1.6); addTree(170, -30, 1.4); addTree(155, -55, 1.8);
-addTree(40, 160, 1.5); addTree(30, 170, 1.3); addTree(55, 155, 1.7);
-addTree(-40, -160, 1.6); addTree(-30, -170, 1.4); addTree(-55, -155, 1.8);
+// Trees — Massive Forest
+for (let i = 0; i < 150; i++) {
+    const rx = (Math.random() - 0.5) * 700;
+    const rz = (Math.random() - 0.5) * 700;
+    if (Math.abs(rx) < 60 && Math.abs(rz) < 60) continue; // Keep center pyramid area clear
+    addTree(rx, rz, 4 + Math.random() * 8); // Scale between 4 and 12 for very large trees
+}
 
 // Rocks (extended)
 addRock(-15, -15, 1.8); addRock(25, -35, 2.2); addRock(-28, 25, 1.5); addRock(38, 15, 2);
@@ -1006,46 +1025,102 @@ function openChest(ch) {
 function spawnLootItem(x, z, lt) {
     const yFloor = groundH({ x: x, y: getTerrainH(x, z) + 20, z: z });
     const m = new THREE.Group();
-    if (lt.type === 'shield') {
-        // Shield Pot (Image 2)
-        const glassMat = new THREE.MeshStandardMaterial({ color: 0x88ccff, transparent: true, opacity: 0.4, roughness: 0.1, metalness: 0.8 });
-        const liquidMat = new THREE.MeshStandardMaterial({ color: 0x0000ff, roughness: 0.2, emissive: 0x0000ff, emissiveIntensity: 0.5 });
-        const lidMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.5, metalness: 0.5 });
-        const jar = new THREE.Mesh(new THREE.SphereGeometry(0.3, 16, 16, 0, Math.PI * 2, 0, Math.PI * 0.7), glassMat);
-        const liquid = new THREE.Mesh(new THREE.SphereGeometry(0.28, 16, 16, 0, Math.PI * 2, 0, Math.PI * 0.6), liquidMat);
-        const lid = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.1, 16), lidMat);
-        lid.position.y = 0.25; m.add(jar); m.add(liquid); m.add(lid);
+    if (lt.type === 'shield' || (lt.type === 'weapon' && lt.wpnIdx === 2)) {
+        // Shield model
+        const shieldMat = new THREE.MeshStandardMaterial({ color: 0x42a5f5, metalness: 0.5, roughness: 0.5 });
+        const shieldTrim = new THREE.MeshStandardMaterial({ color: 0xaaaaaa, metalness: 0.8, roughness: 0.2 });
+        const body = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.05, 16), shieldMat);
+        body.rotation.x = Math.PI / 2; m.add(body);
+        const trim = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.32, 0.06, 16), shieldTrim);
+        trim.rotation.x = Math.PI / 2; m.add(trim);
+    } else if (lt.type === 'weapon' && lt.wpnIdx === 1) {
+        // Sword model
+        const bMat = new THREE.MeshStandardMaterial({ color: 0xdddddd, metalness: 1, roughness: 0.1 });
+        const hMat = new THREE.MeshStandardMaterial({ color: 0x3e2723 });
+        const gMat = new THREE.MeshStandardMaterial({ color: 0xffd700, metalness: 1 });
+        const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.2, 8), hMat);
+        m.add(handle);
+        const guard = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.03, 0.05), gMat);
+        guard.position.y = 0.1; m.add(guard);
+        const blade = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.5, 0.01), bMat);
+        blade.position.y = 0.35; m.add(blade);
+        const tip = new THREE.Mesh(new THREE.ConeGeometry(0.042, 0.1, 4), bMat);
+        tip.position.y = 0.6; tip.rotation.y = Math.PI/4; m.add(tip);
+        m.rotation.x = Math.PI / 4;
+    } else if (lt.type === 'shield') {
+        const itemMat = new THREE.MeshStandardMaterial({ color: lt.color, metalness: 0.2, roughness: 0.3, transparent: true, opacity: 0.85 });
+        const capMat = new THREE.MeshStandardMaterial({ color: 0x8B4513, roughness: 0.9 }); // Brown cork/cap
+        const body = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 0.35, 16), itemMat);
+        const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.07, 0.05, 16), capMat);
+        cap.position.y = 0.2;
+        body.add(cap);
+        m.add(body);
+    } else if (lt.type === 'heal') {
+        const item = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.2, 0.25), new THREE.MeshStandardMaterial({ color: lt.color, emissive: lt.color, emissiveIntensity: 0.1 }));
+        m.add(item);
     } else {
         const item = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.6, 0.6), new THREE.MeshStandardMaterial({ color: lt.color, emissive: lt.color, emissiveIntensity: 0.3 }));
         m.add(item);
     }
-    m.position.set(x, yFloor + 0.3, z); m.userData = { type: 'loot', loot: lt, bobPhase: Math.random() * Math.PI * 2 }; scene.add(m); lootItems.push(m);
+    m.position.set(x, yFloor + 0.5, z); m.userData = { type: 'loot', loot: lt, bobPhase: Math.random() * Math.PI * 2, baseY: yFloor + 0.5 }; scene.add(m); lootItems.push(m);
 }
-function pickupLoot(item) { const lt = item.userData.loot; if (lt.type === 'weapon') { WPN[lt.wpnIdx].mag = WPN[lt.wpnIdx].maxMag; selW = lt.wpnIdx; mkFPW(selW); } else if (lt.type === 'heal') { pHP = Math.min(100, pHP + lt.amount); } else if (lt.type === 'shield') { pShield = Math.min(100, pShield + lt.amount); } scene.remove(item); lootItems = lootItems.filter(l => l !== item); updHUD(); const kf = document.getElementById('killF'); kf.textContent = '+ ' + lt.n; kf.classList.add('show'); setTimeout(() => kf.classList.remove('show'), 1200); }
+function pickupLoot(item) {
+    const lt = item.userData.loot;
+    if (lt.type === 'weapon') {
+        if (!pInv.includes(lt.wpnIdx)) pInv.push(lt.wpnIdx);
+        WPN[lt.wpnIdx].mag = WPN[lt.wpnIdx].maxMag;
+        mode = 'combat'; selW = lt.wpnIdx; mkFPW(selW);
+    } else if (lt.type === 'heal' || lt.type === 'shield') {
+        if (pConsumables.length < 2) {
+            pConsumables.push(lt);
+            mode = 'combat'; selW = 3 + pConsumables.length - 1; mkFPW(selW);
+        } else {
+            return; // Inventory full
+        }
+    }
+    scene.remove(item);
+    lootItems = lootItems.filter(l => l !== item);
+    updHUD();
+    const kf = document.getElementById('killF'); kf.textContent = '+ ' + lt.n; kf.classList.add('show'); setTimeout(() => kf.classList.remove('show'), 1200);
+}
 function spawnAllChests() {
-    for (const pos of chestSpawns) {
-        spawnChest(pos.x, pos.z);
+    const radius = 8;
+    for (let i = 0; i < 8; i++) {
+        const angle = (i / 8) * Math.PI * 2;
+        const cx = Math.cos(angle) * radius;
+        const cz = Math.sin(angle) * radius;
+        spawnChest(cx, cz);
     }
 }
 function startBattleRoyale() {
-    gamePhase = 'dropping'; kills = 0; botsAlive = totalBots; pHP = 100; pShield = 0; res = 500;
+    gamePhase = 'dropping'; kills = 0; botsAlive = totalBots - 1; pHP = 100; pShield = 0; res = 500;
+    pInv = [0]; pConsumables = []; selW = 0; mkFPW(0);
     bots.forEach(b => scene.remove(b)); bots = [];
     chests.forEach(c => scene.remove(c)); chests = [];
     lootItems.forEach(l => scene.remove(l)); lootItems = [];
     spawnAllChests();
 
-    // Spawn player at random position
-    const spawnX = (Math.random() - 0.5) * 360;
-    const spawnZ = (Math.random() - 0.5) * 360;
-    const spawnY = getTerrainH(spawnX, spawnZ) + 5;
-    cam.position.set(spawnX, spawnY, spawnZ);
-    cam.rotation.set(0, 0, 0);
-    vel.set(0, 0, 0);
-
     document.getElementById('startScreen').style.display = 'none';
     document.getElementById('hud').classList.add('active');
     updHUD();
-    for (let i = 0; i < totalBots; i++) { spawnBot((Math.random() - 0.5) * 360, (Math.random() - 0.5) * 360); }
+
+    const totalSpots = totalBots;
+    const playerSpotIndex = Math.floor(Math.random() * totalSpots);
+    const botRadius = 160;
+
+    for (let i = 0; i < totalSpots; i++) { 
+        const angle = (i / totalSpots) * Math.PI * 2;
+        const px = Math.cos(angle) * botRadius;
+        const pz = Math.sin(angle) * botRadius;
+        
+        if (i === playerSpotIndex) {
+            cam.position.set(px, getTerrainH(px, pz) + 5, pz);
+            cam.lookAt(0, cam.position.y, 0);
+            vel.set(0, 0, 0);
+        } else {
+            spawnBot(px, pz);
+        }
+    }
     stormRadius = 400; stormTimer = 0; lastStormDmgT = Date.now();
     stormCenter = { x: (Math.random() - 0.5) * 150, z: (Math.random() - 0.5) * 150 };
     stormMesh.position.set(stormCenter.x, 100, stormCenter.z);
@@ -1155,9 +1230,7 @@ function mkSkin(id) {
     }
 
     // Weapon for bot (hidden for player, handled by FPW)
-    const gun = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 0.6), new THREE.MeshStandardMaterial({ color: 0x444444 }));
-    gun.position.set(-0.35, 0.9, -0.3); g.add(gun);
-    gun.name = 'botGun';
+    // Gun removed, replaced by fists
 
     return g;
 }
@@ -1168,7 +1241,7 @@ function spawnBot(x, z) {
     const skinId = Math.floor(Math.random() * 5);
     const b = mkSkin(skinId);
     b.position.set(x, getTerrainH(x, z), z);
-    b.userData = { hp: 100, shield: 100, dir: Math.random() > 0.5 ? 1 : -1, t: Math.random() * 2, maxHp: 100, target: null, lastFire: 0 };
+    b.userData = { hp: 100, shield: 100, dir: Math.random() > 0.5 ? 1 : -1, t: Math.random() * 2, maxHp: 100, target: null, lastFire: 0, hasWeapon: false };
     scene.add(b); bots.push(b);
 }
 
@@ -1181,78 +1254,112 @@ let eHP = 100;
 const fpG = new THREE.Group(); cam.add(fpG); scene.add(cam);
 function mkFPW(t) {
     while (fpG.children.length) fpG.remove(fpG.children[0]);
-
-    // Metal texture with high repetition for detail
-    const metalTex = loadTex('metal_texture.png', 8, 8);
-
-    const wSkinId = typeof window.selectedWSkin !== 'undefined' ? window.selectedWSkin : (typeof selectedWSkin !== 'undefined' ? selectedWSkin : 0);
-    let primColor = 0x444444; // Default grey
-    let accColor = WPN[t].c;  // Default accent
-    if (wSkinId === 1) { primColor = 0x880000; accColor = 0xff0000; } // Crimson
-    else if (wSkinId === 2) { primColor = 0x000088; accColor = 0x00ffff; } // Cobalt
-
-    const dk = new THREE.MeshStandardMaterial({ map: metalTex, color: primColor, roughness: 0.3, metalness: 0.8 });
-    const dk2 = new THREE.MeshStandardMaterial({ map: metalTex, color: 0x222222, roughness: 0.4, metalness: 0.6 });
-    const ac = new THREE.MeshStandardMaterial({ color: accColor, roughness: 0.3, metalness: 0.4 });
-    const wd = makeBarkMat(0.8, 1, 2);
-    const chr = new THREE.MeshStandardMaterial({ map: metalTex, color: 0xffffff, roughness: 0.15, metalness: 1.0 });
     const g = new THREE.Group();
-    if (t === 0) { // Rifle - enhanced
-        const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.022, 0.6, 10), dk); barrel.rotation.x = Math.PI / 2; barrel.position.set(0, 0.02, -0.35); g.add(barrel);
-        const tip = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.018, 0.08, 10), chr); tip.rotation.x = Math.PI / 2; tip.position.set(0, 0.02, -0.64); g.add(tip);
-        // Flash hider slots
-        for (let i = 0; i < 4; i++) { const sl = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.005, 0.02), dk2); sl.position.set(0, 0.02, -0.62 + i * 0.015); sl.rotation.z = i * Math.PI / 4; g.add(sl); }
-        const recv = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.085, 0.24), dk); recv.position.set(0, 0, -0.05); g.add(recv);
-        // Ejection port
-        const eject = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.04, 0.06), dk2); eject.position.set(0.038, 0.01, -0.02); g.add(eject);
-        // Charging handle
-        const ch = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.02, 0.04), chr); ch.position.set(0, 0.05, -0.02); g.add(ch);
-        const stock = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.07, 0.2), wd); stock.position.set(0, -0.01, 0.17); g.add(stock);
-        const stockPad = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.075, 0.02), new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 0.8 })); stockPad.position.set(0, -0.01, 0.28); g.add(stockPad);
-        const grip = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.1, 0.05), wd); grip.position.set(0, -0.08, 0.05); grip.rotation.x = 0.3; g.add(grip);
-        // Trigger guard
-        const tg = new THREE.Mesh(new THREE.TorusGeometry(0.03, 0.005, 4, 8, Math.PI), dk2); tg.position.set(0, -0.06, 0.04); tg.rotation.y = Math.PI / 2; g.add(tg);
-        const mag = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.14, 0.055), ac); mag.position.set(0, -0.12, -0.08); g.add(mag);
-        // Scope
-        const scopeBody = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.14, 8), chr); scopeBody.rotation.x = Math.PI / 2; scopeBody.position.set(0, 0.065, -0.06); g.add(scopeBody);
-        const scopeF = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.02, 0.02, 8), ac); scopeF.rotation.x = Math.PI / 2; scopeF.position.set(0, 0.065, -0.13); g.add(scopeF);
-        const scopeR = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.025, 0.02, 8), ac); scopeR.rotation.x = Math.PI / 2; scopeR.position.set(0, 0.065, 0.01); g.add(scopeR);
-        const rail = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.01, 0.22), ac); rail.position.set(0, 0.047, -0.05); g.add(rail);
-        const fg = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.06, 0.05), dk2); fg.position.set(0, -0.05, -0.22); g.add(fg);
-        // Handguard details
-        for (let i = 0; i < 3; i++) { const vent = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.005, 0.02), dk2); vent.position.set(0, -0.01, -0.15 - i * 0.04); g.add(vent); }
-    } else if (t === 1) { // Shotgun - enhanced
-        const b1 = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.5, 10), dk); b1.rotation.x = Math.PI / 2; b1.position.set(-0.02, 0.02, -0.22); g.add(b1);
-        const b2 = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.5, 10), dk); b2.rotation.x = Math.PI / 2; b2.position.set(0.02, 0.02, -0.22); g.add(b2);
-        // Barrel band
-        const band = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.065, 0.02), chr); band.position.set(0, 0.02, -0.35); g.add(band);
-        // Front sight
-        const fSight = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.02, 0.01), ac); fSight.position.set(0, 0.055, -0.42); g.add(fSight);
-        const recv = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.085, 0.18), dk2); recv.position.set(0, 0, 0.03); g.add(recv);
-        const stock = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.08, 0.22), wd); stock.position.set(0, -0.01, 0.2); g.add(stock);
-        const stockPad = new THREE.Mesh(new THREE.BoxGeometry(0.065, 0.085, 0.015), new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 0.8 })); stockPad.position.set(0, -0.01, 0.32); g.add(stockPad);
-        const grip = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.1, 0.05), wd); grip.position.set(0, -0.08, 0.08); grip.rotation.x = 0.3; g.add(grip);
-        const tg = new THREE.Mesh(new THREE.TorusGeometry(0.03, 0.005, 4, 8, Math.PI), dk2); tg.position.set(0, -0.06, 0.06); tg.rotation.y = Math.PI / 2; g.add(tg);
-        const pump = new THREE.Mesh(new THREE.BoxGeometry(0.065, 0.045, 0.1), ac); pump.position.set(0, -0.03, -0.12); g.add(pump);
-        // Shell holder on side
-        for (let i = 0; i < 3; i++) { const sh = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.04, 6), new THREE.MeshStandardMaterial({ color: 0xcc3333 })); sh.rotation.x = Math.PI / 2; sh.position.set(0.055, 0.01, 0.08 + i * 0.04); g.add(sh); }
-    } else { // Pickaxe - enhanced
-        const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.022, 0.65, 8), wd); handle.position.set(0, 0, -0.1); handle.rotation.x = 0.2; g.add(handle);
-        // Handle grip wraps
-        for (let i = 0; i < 5; i++) { const wrap = new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.024, 0.015, 8), new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.9 })); wrap.position.set(0, -0.15 + i * 0.04, -0.02 + i * 0.008); wrap.rotation.x = 0.2; g.add(wrap); }
+    
+    if (t === 0) {
+        // Puños (fists)
+        const skinColor = new THREE.MeshStandardMaterial({ color: 0xffa07a, roughness: 0.8 });
+        const fistGeo = new THREE.BoxGeometry(0.15, 0.15, 0.15);
+        const rightFist = new THREE.Mesh(fistGeo, skinColor);
+        rightFist.position.set(0.15, -0.2, -0.4);
+        g.add(rightFist);
+        const leftFist = new THREE.Mesh(fistGeo, skinColor);
+        leftFist.position.set(-0.15, -0.2, -0.4);
+        g.add(leftFist);
+    } else if (t === 1) {
+        // Espada (sword) - ROBUST & SKINS
+        const wSkinEl = document.querySelector('#wpnSkinSelector .selected');
+        const wSkin = wSkinEl ? parseInt(wSkinEl.dataset.wskin) : 0;
+        
+        let bColor = 0xdddddd, bEmissive = 0x000000;
+        let fColor = 0x111111, fEmissive = 0x000000;
+        
+        if (wSkin === 1) { // NEON
+            bColor = 0x2a2a2a; fColor = 0x00e5ff; fEmissive = 0x0099cc;
+        } else if (wSkin === 2) { // MAGMA
+            bColor = 0x3a1a1a; bEmissive = 0x220000; fColor = 0xff5722; fEmissive = 0xdd2c00;
+        }
+
+        const bladeMat = new THREE.MeshStandardMaterial({ color: bColor, emissive: bEmissive, metalness: 1.0, roughness: 0.15 });
+        const fullerMat = new THREE.MeshStandardMaterial({ color: fColor, emissive: fEmissive, metalness: 0.8, roughness: 0.2 });
+        const handleMat = new THREE.MeshStandardMaterial({ color: 0x3e2723, roughness: 0.95 });
+        const guardMat = new THREE.MeshStandardMaterial({ color: 0xffd700, metalness: 0.9, roughness: 0.3 });
+
+        // Handle
+        const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.18, 12), handleMat);
+        handle.position.set(0.15, -0.25, -0.35);
+        handle.rotation.x = Math.PI / 4;
+        g.add(handle);
+
         // Pommel
-        const pommel = new THREE.Mesh(new THREE.SphereGeometry(0.025, 6, 6), dk); pommel.position.set(0, -0.26, 0.04); g.add(pommel);
-        const conn = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.06, 0.05), dk); conn.position.set(0, 0.24, -0.4); g.add(conn);
-        // Main blade (curved)
-        const blade = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.045, 0.035), ac); blade.position.set(0, 0.24, -0.44); g.add(blade);
-        // Pick point (sharper)
-        const point = new THREE.Mesh(new THREE.ConeGeometry(0.025, 0.14, 4), ac); point.rotation.z = Math.PI / 2; point.position.set(-0.2, 0.24, -0.44); g.add(point);
-        // Chisel end (flat)
-        const chisel = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.05, 0.01), ac); chisel.position.set(0.16, 0.24, -0.44); g.add(chisel);
-        // Reinforcement bolt
-        const bolt = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.06, 6), chr); bolt.position.set(0, 0.24, -0.4); bolt.rotation.x = Math.PI / 2; g.add(bolt);
+        const pommel = new THREE.Mesh(new THREE.SphereGeometry(0.025, 16, 16), guardMat);
+        pommel.position.set(0.15, -0.31, -0.29);
+        g.add(pommel);
+
+        // Guard
+        const guard = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.02, 0.04), guardMat);
+        guard.position.set(0.15, -0.19, -0.41);
+        guard.rotation.x = Math.PI / 4;
+        g.add(guard);
+
+        // Blade
+        const blade = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.6, 0.01), bladeMat);
+        blade.position.set(0.15, 0.09, -0.69); 
+        blade.rotation.x = Math.PI / 4;
+        g.add(blade);
+
+        // Sharp Tip
+        const tip = new THREE.Mesh(new THREE.ConeGeometry(0.035, 0.15, 4), bladeMat);
+        tip.position.set(0.15, 0.3, -0.9);
+        tip.rotation.set(Math.PI / 4, Math.PI / 4, 0, 'YXZ');
+        g.add(tip);
+        
+        // Fuller
+        const fuller = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.45, 0.012), fullerMat);
+        fuller.position.set(0.15, 0.05, -0.65);
+        fuller.rotation.x = Math.PI / 4;
+        g.add(fuller);
+    } else if (t === 2) {
+        // Escudo (shield)
+        const shieldMat = new THREE.MeshStandardMaterial({ color: 0x42a5f5, metalness: 0.4, roughness: 0.6 });
+        const shieldTrim = new THREE.MeshStandardMaterial({ color: 0xaaaaaa, metalness: 0.8, roughness: 0.2 });
+
+        const shieldBody = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.05, 16), shieldMat);
+        shieldBody.rotation.x = Math.PI / 2;
+        shieldBody.position.set(0, -0.1, -0.5);
+        g.add(shieldBody);
+
+        const trim = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.32, 0.06, 16), shieldTrim);
+        trim.rotation.x = Math.PI / 2;
+        trim.position.set(0, -0.1, -0.5);
+        g.add(trim);
+    } else if (t >= 3) {
+        const consIdx = t - 3;
+        if (pConsumables[consIdx]) {
+            const lt = pConsumables[consIdx];
+            if (lt.type === 'shield') {
+                const itemMat = new THREE.MeshStandardMaterial({ color: lt.color, metalness: 0.2, roughness: 0.3, transparent: true, opacity: 0.85 });
+                const capMat = new THREE.MeshStandardMaterial({ color: 0x8B4513, roughness: 0.9 });
+                const body = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.15, 16), itemMat);
+                const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.03, 0.02, 16), capMat);
+                cap.position.y = 0.085;
+                body.add(cap);
+                body.position.set(0.15, -0.1, -0.3);
+                body.rotation.x = -Math.PI / 4;
+                body.rotation.z = Math.PI / 8;
+                g.add(body);
+            } else {
+                const consMat = new THREE.MeshStandardMaterial({ color: lt.color });
+                const itemMesh = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.08, 0.1), consMat);
+                itemMesh.position.set(0.15, -0.1, -0.3);
+                itemMesh.rotation.x = -Math.PI / 8;
+                itemMesh.rotation.y = Math.PI / 6;
+                g.add(itemMesh);
+            }
+        }
     }
-    g.position.set(0.3, -0.25, -0.4); fpG.add(g);
+
+    fpG.add(g);
 }
 mkFPW(0);
 
@@ -1424,12 +1531,25 @@ function placeBuild() {
 const rc = new THREE.Raycaster();
 function shoot() {
     if (mode !== 'combat' || gamePhase !== 'playing') return;
+    
+    if (selW >= 3) {
+        const consIdx = selW - 3;
+        if (pConsumables[consIdx]) {
+            const cons = pConsumables[consIdx];
+            if (cons.type === 'heal') pHP = Math.min(100, pHP + cons.amount);
+            else if (cons.type === 'shield') pShield = Math.min(100, pShield + cons.amount);
+            pConsumables.splice(consIdx, 1);
+            selW = 0; mkFPW(0); updHUD();
+        }
+        return;
+    }
+
     if (WPN[selW].reloading) return;
     if (WPN[selW].mag <= 0) { reloadWpn(); return; }
 
     const now = Date.now(); if (now - lastShot < WPN[selW].rate) return; lastShot = now;
 
-    if (selW < 2) {
+    if (false) {
         WPN[selW].mag--;
         updHUD();
     }
@@ -1500,25 +1620,12 @@ function shoot() {
             hitAny = true;
         }
 
-        if (selW < 2) {
-            const o = cam.position.clone();
-            const dir = rc.ray.direction.clone();
-            const end = hitBot ? hitBot.point : (hitBuild ? hitBuild.point : o.clone().add(dir.multiplyScalar(WPN[selW].rng)));
-            const len = o.distanceTo(end);
-            const tG = new THREE.CylinderGeometry(0.008, 0.008, len, 4);
-            const tM = new THREE.MeshBasicMaterial({ color: WPN[selW].c, transparent: true, opacity: 0.6 });
-            const tr = new THREE.Mesh(tG, tM);
-            const mid = o.clone().add(end).multiplyScalar(0.5);
-            tr.position.copy(mid); tr.lookAt(end); tr.rotateX(Math.PI / 2);
-            tr.userData.born = Date.now(); scene.add(tr); tracers.push(tr);
-        }
+        // No tracers for fists
     }
 
     if (hitAny) { showHit(); updHUD(); }
 
-    const flash = new THREE.PointLight(WPN[selW].c, 3, 8);
-    flash.position.copy(cam.position); scene.add(flash);
-    setTimeout(() => scene.remove(flash), 60);
+    // No flash for fists
     if (fpG.children[0]) { fpG.children[0].position.z += 0.06; setTimeout(() => { if (fpG.children[0]) fpG.children[0].position.z -= 0.06; }, 80); }
 }
 
@@ -1579,12 +1686,12 @@ function showKill() {
 // HUD
 function updHUD() {
     const pHpEl = document.getElementById('pHp');
-    if (pHpEl) { pHpEl.style.width = pHP + '%'; document.getElementById('pHpT').textContent = 'HP: ' + Math.round(pHP); }
+    if (pHpEl) { pHpEl.style.width = pHP + '%'; document.getElementById('pHpT').textContent = Math.round(pHP) + ' | 100'; }
     const pShEl = document.getElementById('pShield');
-    if (pShEl) { pShEl.style.width = pShield + '%'; document.getElementById('pShieldT').textContent = '🛡 ' + Math.round(pShield); }
+    if (pShEl) { pShEl.style.width = pShield + '%'; document.getElementById('pShieldT').textContent = Math.round(pShield) + '|100'; }
     const ammoEl = document.getElementById('pAmmo');
     if (ammoEl) {
-        if (selW === 2) ammoEl.textContent = 'AMMO: ∞';
+        if (selW === 2 || selW >= 3) ammoEl.textContent = 'AMMO: ∞';
         else if (WPN[selW].reloading) ammoEl.textContent = 'RELOADING...';
         else ammoEl.textContent = `AMMO: ${WPN[selW].mag} / ${WPN[selW].maxMag}`;
     }
@@ -1592,36 +1699,59 @@ function updHUD() {
     const alive = document.getElementById('aliveNum');
     if (alive) alive.textContent = botsAlive;
     const mi = document.getElementById('modeI');
-    if (mode === 'edit') { mi.className = 'mode-ind e'; mi.textContent = '✏ EDITAR'; }
-    else if (mode === 'build') { mi.className = 'mode-ind b'; mi.textContent = '🔨 CONSTRUIR'; }
-    else { mi.className = 'mode-ind c'; mi.textContent = '⚔ COMBATE'; }
+    if (mi) {
+        if (mode === 'edit') { mi.className = 'mode-ind e'; mi.textContent = '✏ EDITAR'; }
+        else if (mode === 'build') { mi.className = 'mode-ind b'; mi.textContent = '🔨 CONSTRUIR'; }
+        else { mi.className = 'mode-ind c'; mi.textContent = '⚔ COMBATE'; }
+    }
     const ei = document.getElementById('editInfo');
     if (ei) { ei.className = mode === 'edit' ? 'show' : ''; }
-    const combatLb = [['🔫', '1'], ['💥', '2'], ['⛏', '3'], ['', '4'], ['', '5']];
+    
+    const combatLb = [
+        ['✊', '1'], ['⚔', '2'], ['🛡', '3'], 
+        pConsumables.length > 0 ? [pConsumables[0].type === 'heal' ? '🩹' : '💧', '4'] : ['', '4'], 
+        pConsumables.length > 1 ? [pConsumables[1].type === 'heal' ? '🩹' : '💧', '5'] : ['', '5']
+    ];
     const buildLb = [['▬', '1'], ['◣', '2'], ['▭', '3'], ['⊞', '4'], ['⊟', '5']];
     const editLb = [['✎', '1'], ['↻', 'R'], ['✕', 'X'], ['↔', 'F'], ['', '5']];
     const lb = mode === 'combat' ? combatLb : (mode === 'build' ? buildLb : editLb);
+    
     for (let i = 0; i < 5; i++) {
         const b = document.getElementById('s' + (i + 1));
         if (!b) continue;
+        
         b.querySelector('.ic').textContent = lb[i] ? lb[i][0] : '';
         b.querySelector('.lb').textContent = lb[i] ? lb[i][1] : '';
         b.className = 'bbtn';
-        if (mode === 'combat') { if (i === selW && i < 3) b.classList.add('con'); }
-        else if (mode === 'build') { if (i === selB) b.classList.add('on'); }
-        else { b.style.display = i < 4 ? '' : 'none'; }
+        b.style.opacity = '1';
+        
+        if (mode === 'combat') { 
+            b.style.display = 'flex';
+            if (i === selW) b.classList.add('con'); 
+            
+            if (i < 3 && !pInv.includes(i)) {
+                b.querySelector('.ic').textContent = '';
+                b.style.opacity = '0.3';
+            } else if (i >= 3 && pConsumables.length <= (i - 3)) {
+                b.querySelector('.ic').textContent = '';
+                b.style.opacity = '0.3';
+            }
+        }
+        else if (mode === 'build') { 
+            b.style.display = 'flex';
+            if (i === selB) b.classList.add('on'); 
+        }
+        else { 
+            b.style.display = i < 4 ? 'flex' : 'none'; 
+        }
     }
-    // Show/hide slots 4+5 based on mode
-    const s4 = document.getElementById('s4'), s5 = document.getElementById('s5');
-    if (s4) s4.style.display = mode === 'combat' ? 'none' : '';
-    if (s5) s5.style.display = (mode === 'combat' || mode === 'edit') ? 'none' : '';
     document.querySelectorAll('#pW li').forEach((l, i) => l.classList.toggle('active', i === selW));
 
     // Update Crosshair
     const ch = document.getElementById('crosshair');
     if (ch) {
         ch.className = '';
-        if (mode === 'combat') ch.classList.add('ch-' + selW);
+        if (mode === 'combat') ch.classList.add('ch-' + (selW < 3 ? selW : 2));
         else ch.classList.add('ch-2'); // Use pickaxe style for build/edit
     }
 }
@@ -1688,22 +1818,30 @@ document.addEventListener('keydown', e => {
     if (e.code === 'KeyX' && mode === 'edit') editDelete();
     if (e.code === 'KeyF' && mode === 'edit') editStartMove();
     if (e.code === 'Digit1') {
-        if (mode === 'combat') { selW = 0; mkFPW(0); }
+        if (mode === 'combat' && pInv.includes(0)) { selW = 0; mkFPW(0); }
         else if (mode === 'build') { selB = 0; updGhost(); }
         updHUD();
     }
     if (e.code === 'Digit2') {
-        if (mode === 'combat') { selW = 1; mkFPW(1); }
+        if (mode === 'combat' && pInv.includes(1)) { selW = 1; mkFPW(1); }
         else if (mode === 'build') { selB = 1; updGhost(); }
         updHUD();
     }
     if (e.code === 'Digit3') {
-        if (mode === 'combat') { selW = 2; mkFPW(2); }
+        if (mode === 'combat' && pInv.includes(2)) { selW = 2; mkFPW(2); }
         else if (mode === 'build') { selB = 2; updGhost(); }
         updHUD();
     }
-    if (e.code === 'Digit4' && mode === 'build') { selB = 3; updGhost(); updHUD(); }
-    if (e.code === 'Digit5' && mode === 'build') { selB = 4; updGhost(); updHUD(); }
+    if (e.code === 'Digit4') {
+        if (mode === 'combat' && pConsumables.length >= 1) { selW = 3; mkFPW(3); }
+        else if (mode === 'build') { selB = 3; updGhost(); }
+        updHUD();
+    }
+    if (e.code === 'Digit5') {
+        if (mode === 'combat' && pConsumables.length >= 2) { selW = 4; mkFPW(4); }
+        else if (mode === 'build') { selB = 4; updGhost(); }
+        updHUD();
+    }
 });
 document.addEventListener('keyup', e => keys[e.code] = false);
 
@@ -1801,31 +1939,83 @@ function updEnemy(dt) {
         // Find closest target (player or another bot)
         let target = null;
         let minDist = Infinity;
-        const distToPlayer = bot.position.distanceToSquared(new THREE.Vector3(px, bot.position.y, pz));
-        if (distToPlayer < 6400 && pHP > 0) { target = 'player'; minDist = distToPlayer; }
-        bots.forEach(otherBot => {
-            if (otherBot === bot) return;
-            const dist = bot.position.distanceToSquared(otherBot.position);
-            if (dist < 6400 && dist < minDist) { target = otherBot; minDist = dist; }
-        });
+        let seekingLoot = false;
+
+        // Find loot if unarmed
+        if (!bot.userData.hasWeapon) {
+            // Priority 1: Loose weapon loot on ground
+            lootItems.forEach(l => {
+                if (l.userData.loot && l.userData.loot.type === 'weapon') {
+                    const dist = bot.position.distanceToSquared(l.position);
+                    if (dist < minDist) { minDist = dist; target = l; seekingLoot = true; }
+                }
+            });
+            // Priority 2: Unopened chests
+            if (!target) {
+                chests.forEach(c => {
+                    if (!c.userData.opened) {
+                        const dist = bot.position.distanceToSquared(c.position);
+                        if (dist < minDist) { minDist = dist; target = c; seekingLoot = true; }
+                    }
+                });
+            }
+        }
+
+        // If has weapon OR no loot found, fight!
+        if (!seekingLoot) {
+            minDist = Infinity;
+            const distToPlayer = bot.position.distanceToSquared(new THREE.Vector3(px, bot.position.y, pz));
+            if (distToPlayer < 6400 && pHP > 0) { target = 'player'; minDist = distToPlayer; }
+            bots.forEach(otherBot => {
+                if (otherBot === bot) return;
+                const dist = bot.position.distanceToSquared(otherBot.position);
+                if (dist < 6400 && dist < minDist) { target = otherBot; minDist = dist; }
+            });
+        }
 
         if (!target) return; // Sleep if no targets nearby
 
         let tx = px, ty = py, tz = pz;
-        if (target !== 'player') { tx = target.position.x; ty = target.position.y; tz = target.position.z; }
+        if (target !== 'player' && target.position) { tx = target.position.x; ty = target.position.y; tz = target.position.z; }
 
         // Move towards target with collision detection
-        const speed = 4;
+        const speed = 6.5; 
         const dx = tx - bot.position.x, dz = tz - bot.position.z;
         const distTarget = Math.sqrt(dx * dx + dz * dz);
 
+        // Loot Interaction
+        if (seekingLoot && distTarget < 4) {
+            if (target.userData.type === 'chest' && !target.userData.opened) {
+                openChest(target);
+            } else if (target.userData.type === 'loot') {
+                bot.userData.hasWeapon = true;
+                if (target.userData.loot) bot.userData.wpnIdx = target.userData.loot.wpnIdx;
+                scene.remove(target);
+                lootItems = lootItems.filter(l => l !== target);
+            }
+            return; 
+        }
+
         const np = bot.position.clone();
-        if (distTarget > 5) {
+        
+        // Forward/Backward movement
+        if (distTarget > (seekingLoot ? 0.5 : 4.5)) {
             np.x += (dx / distTarget) * speed * dt;
             np.z += (dz / distTarget) * speed * dt;
-        } else if (distTarget < 3) {
+        } else if (!seekingLoot && distTarget < 3) {
             np.x -= (dx / distTarget) * speed * dt;
             np.z -= (dz / distTarget) * speed * dt;
+        }
+
+        // Strafing movement (to avoid staying static)
+        if (!seekingLoot) {
+            if (!bot.userData.strafeDir) bot.userData.strafeDir = Math.random() > 0.5 ? 1 : -1;
+            if (Math.random() < 0.01) bot.userData.strafeDir *= -1; // Change direction occasionally
+            
+            const sx = -dz / distTarget;
+            const sz = dx / distTarget;
+            np.x += sx * (speed * 0.7) * dt * bot.userData.strafeDir;
+            np.z += sz * (speed * 0.7) * dt * bot.userData.strafeDir;
         }
         np.y = getTerrainH(np.x, np.z);
 
@@ -1859,9 +2049,11 @@ function updEnemy(dt) {
         bot.position.z = Math.max(-190, Math.min(190, bot.position.z));
         bot.lookAt(tx, bot.position.y, tz);
 
-        // Shoot
+        // Shoot (only if has weapon)
+        if (!bot.userData.hasWeapon) return;
+
         if (!bot.userData.lastFire) bot.userData.lastFire = 0;
-        if (now - bot.userData.lastFire > 600 && distTarget < 40 && Math.random() < 0.6) {
+        if (now - bot.userData.lastFire > 600 && distTarget < 8 && Math.random() < 0.6) {
             bot.userData.lastFire = now;
 
             const startP = bot.position.clone(); startP.y += 1.0;
@@ -1878,14 +2070,7 @@ function updEnemy(dt) {
 
             const endP = hitBuild ? bHits[0].point : targetP;
             const tracerDist = startP.distanceTo(endP);
-
-            // Draw tracer
-            const tG = new THREE.CylinderGeometry(0.01, 0.01, tracerDist, 4);
-            const tM = new THREE.MeshBasicMaterial({ color: 0xffab00, transparent: true, opacity: 0.6 });
-            const tr = new THREE.Mesh(tG, tM);
-            const mid = startP.clone().add(endP).multiplyScalar(0.5);
-            tr.position.copy(mid); tr.lookAt(endP); tr.rotateX(Math.PI / 2);
-            tr.userData.born = now; scene.add(tr); tracers.push(tr);
+            // Tracer drawing removed since bots use fists
 
             // Damage calculation
             if (hitBuild) {
@@ -1900,7 +2085,7 @@ function updEnemy(dt) {
             } else {
                 if (target === 'player') {
                     if (Math.random() < 0.3) {
-                        const dmg = 15;
+                        const dmg = (bot.userData.wpnIdx !== undefined) ? WPN[bot.userData.wpnIdx].dmg : 25;
                         if (pShield > 0) {
                             const sDmg = Math.min(pShield, dmg);
                             pShield -= sDmg;
@@ -1913,7 +2098,7 @@ function updEnemy(dt) {
                     }
                 } else {
                     if (Math.random() < 0.5) {
-                        const dmg = 20;
+                        const dmg = (bot.userData.wpnIdx !== undefined) ? WPN[bot.userData.wpnIdx].dmg : 25;
                         if (target.userData.shield > 0) {
                             const sDmg = Math.min(target.userData.shield, dmg);
                             target.userData.shield -= sDmg;
@@ -1995,16 +2180,16 @@ function animate() {
             // Check player
             const pDist = Math.sqrt(Math.pow(cam.position.x - stormCenter.x, 2) + Math.pow(cam.position.z - stormCenter.z, 2));
             if (pDist > stormRadius && pHP > 0) {
-                pHP -= 2;
+                pHP -= 5;
                 if (pHP <= 0) { pHP = 0; playerDie('¡ELIMINADO POR LA LLUVIA!'); }
-                else { showDamage(2, cam.position); updHUD(); }
+                else { showDamage(5, cam.position); updHUD(); }
             }
             // Check bots
             bots.forEach(bot => {
                 if (bot.userData.hp > 0) {
                     const bDist = Math.sqrt(Math.pow(bot.position.x - stormCenter.x, 2) + Math.pow(bot.position.z - stormCenter.z, 2));
                     if (bDist > stormRadius) {
-                        bot.userData.hp -= 2;
+                        bot.userData.hp -= 5;
                         if (bot.userData.hp <= 0) handleBotDeath(bot, 'storm');
                     }
                 }
@@ -2017,9 +2202,19 @@ function animate() {
         if (cam.position.y < WATER_Y + PH + 0.2 && (cam.position.x < -95 || cam.position.x > 95 || cam.position.z < -95 || cam.position.z > 95)) { playerDie('\u00a1CA\u00cdSTE AL AGUA!'); }
         if (cam.position.y < -10) { playerDie('\u00a1CA\u00cdSTE AL VAC\u00cdO!'); }
         if (fpG.children[0] && mv.length() > 0) { fpG.children[0].position.y = -0.25 + Math.sin(now * 0.008) * 0.015; }
+        
+        // MULTIPLAYER: Send position to server
+        if (socket && gamePhase === 'playing') {
+            socket.emit('playerMovement', {
+                x: cam.position.x,
+                y: cam.position.y,
+                z: cam.position.z,
+                rotation: cam.rotation.y
+            });
+        }
     }
     // Loot bobbing
-    lootItems.forEach(l => { l.position.y = 0.5 + Math.sin(now * 0.003 + l.userData.bobPhase) * 0.15; l.rotation.y += dt; });
+    lootItems.forEach(l => { l.position.y = (l.userData.baseY || 0.5) + Math.sin(now * 0.003 + l.userData.bobPhase) * 0.15; l.rotation.y += dt; });
 
     for (let i = tracers.length - 1; i >= 0; i--) {
         if (Date.now() - tracers[i].userData.born > 80) { scene.remove(tracers[i]); tracers.splice(i, 1); }
